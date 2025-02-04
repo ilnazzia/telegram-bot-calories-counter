@@ -60,3 +60,7 @@ docker run -d --env-file .env fitness-bot
 - Implements FSM (Finite State Machine) for conversation flow
 - Utilizes matplotlib for data visualization
 - Includes logging middleware for monitoring
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.

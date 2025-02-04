@@ -24,6 +24,14 @@ A Telegram bot that helps users track their daily water intake, calories, and ph
   - Calorie balance visualization
   - Daily and weekly statistics
 
+## Demonstration
+### Set profile command
+![](./screenshots/1_command_set_profile.png)
+### Logging water, food and workout
+![](./screenshots/2_commands_log.png)
+### Check progress plots
+![](./screenshots/3_command%20_check_progress.png)
+
 ## Commands
 
 - `/start` - Initialize the bot
@@ -64,3 +72,4 @@ docker run -d --env-file .env fitness-bot
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+

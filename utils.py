@@ -1,7 +1,7 @@
 import asyncio
 import io
-from datetime import date, timedelta
 import logging
+from datetime import date, timedelta
 
 import aiohttp
 import matplotlib.dates as mdates
@@ -17,6 +17,26 @@ from config import (
     OPEN_WEATHER_API_TOKEN,
     OPEN_WEATHER_API_URL,
 )
+
+
+def setup_logger(name: str) -> logging.Logger:
+    """
+    Настройка и получение логгера
+
+    Args:
+        name: Имя логгера
+
+    Returns:
+        logging.Logger: Настроенный логгер
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    return logging.getLogger(name)
+
+
+logger = setup_logger(__name__)
 
 
 def calculate_water_norm(
@@ -95,11 +115,13 @@ async def get_temperature(city: str) -> float:
                     main = data.get("main", {})
                     return main.get("temp", "Нет данных")
                 else:
-                    print(f"Ошибка API: {response.status}, {await response.text()}")
+                    logger.error(
+                        f"Ошибка API: {response.status}, {await response.text()}"
+                    )
         except aiohttp.ClientError as e:
-            print(f"Ошибка клиента API: {e}")
+            logger.error(f"Ошибка клиента API: {e}")
         except asyncio.TimeoutError:
-            print("Ошибка: Таймаут при запросе к API")
+            logger.error("Ошибка: Таймаут при запросе к API")
     return None
 
 
@@ -140,11 +162,13 @@ async def get_activity_calories(activity: str, weight: float, duration: int) -> 
                     data = await response.json()
                     return data[0].get("total_calories", "Нет данных")
                 else:
-                    print(f"Ошибка API: {response.status}, {await response.text()}")
+                    logger.error(
+                        f"Ошибка API: {response.status}, {await response.text()}"
+                    )
         except aiohttp.ClientError as e:
-            print(f"Ошибка клиента API: {e}")
+            logger.error(f"Ошибка клиента API: {e}")
         except asyncio.TimeoutError:
-            print("Ошибка: Таймаут при запросе к API")
+            logger.error("Ошибка: Таймаут при запросе к API")
     return None
 
 
@@ -179,11 +203,13 @@ async def get_food_calories(food_name: str) -> float:
                     if foods:
                         return foods[0].get("nf_calories", "Нет данных")
                 else:
-                    print(f"Ошибка API: {response.status}, {await response.text()}")
+                    logger.error(
+                        f"Ошибка API: {response.status}, {await response.text()}"
+                    )
         except aiohttp.ClientError as e:
-            print(f"Ошибка клиента API: {e}")
+            logger.error(f"Ошибка клиента API: {e}")
         except asyncio.TimeoutError:
-            print("Ошибка: Таймаут при запросе к API")
+            logger.error("Ошибка: Таймаут при запросе к API")
     return None
 
 
@@ -316,20 +342,3 @@ def create_calories_progress_chart(daily_logs: dict, goal: float) -> io.BytesIO:
     plt.close()
 
     return buf
-
-
-def setup_logger(name: str) -> logging.Logger:
-    """
-    Настройка и получение логгера
-    
-    Args:
-        name: Имя логгера
-    
-    Returns:
-        logging.Logger: Настроенный логгер
-    """
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    return logging.getLogger(name)

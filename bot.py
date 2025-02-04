@@ -1,22 +1,38 @@
 import asyncio
-import logging
+from datetime import date
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import BufferedInputFile, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config import BOT_TOKEN
-from utils import get_temperature
+from middleware import LoggingMiddleware
+from utils import (
+    calculate_calorie_norm,
+    calculate_water_norm,
+    create_calories_progress_chart,
+    create_water_progress_chart,
+    get_activity_calories,
+    get_food_calories,
+    get_temperature,
+    setup_logger,
+)
+
+logger = setup_logger(__name__)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+dp.message.middleware(LoggingMiddleware())
 
 users = {}
 
 
 class SetProfile(StatesGroup):
+    """Состояния для настройки профиля пользователя."""
+
     weight = State()
     height = State()
     age = State()
@@ -25,39 +41,22 @@ class SetProfile(StatesGroup):
     activity_level = State()
 
 
-def calculate_water_norm(
-    weight: float, activity_minutes: int, temperature: float
-) -> int:
-    """Calculate daily water intake norm in ml."""
-    base_norm = weight * 30  # Base water norm
+class LogFood(StatesGroup):
+    """Состояния для записи приема пищи."""
 
-    # Add water for activity
-    activity_addition = (activity_minutes // 30) * 200
-
-    # Add water for hot weather
-    weather_addition = 500 if temperature > 25 else 0
-
-    return int(base_norm + activity_addition + weather_addition)
+    food_name = State()
+    food_amount = State()
 
 
-def calculate_calorie_norm(weight: float, height: float, age: int, sex: str) -> int:
-    """Calculate daily calorie norm."""
-    calories = 10 * weight + 6.25 * height - 5 * age
-
-    # Adjust for sex
-    if sex == "male":
-        calories += 50
-    else:
-        calories -= 161
-
-    return int(calories)
+# Словарь для временного хранения данных о продуктах
+food_cache = {}
 
 
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
     await message.answer(
         f"Привет, {message.from_user.full_name}!\n"
-        "Я бот, который проверяет текущий курс валют. Поддерживается два режима:\n"
+        "Я бот, который проверяет текущий курс валют:\n"
         "1. В сценарии /convert : введите базовую валюту, "
         "потом валюту, в которую вы хотите сконвертировать;\n"
         "2. Введите запрос в формате 'USD to RUB.'\n"
@@ -68,7 +67,7 @@ async def start_command(message: types.Message):
 @dp.message(Command("help"))
 async def help_command(message: types.Message):
     await message.answer(
-        "Привет! Я бот, который проверяет текущий курс валют. Поддерживается два режима:\n"
+        "Привет! Я бот, который проверяет текущий курс валют\n"
         "1. В сценарии /convert : введите базовую валюту, потом валюту, "
         "в которую вы хотите сконвертировать;\n"
         "2. Введите запрос в формате 'USD to RUB.'\n"
@@ -136,25 +135,27 @@ async def set_user_city(message: types.Message, state: FSMContext):
 
 
 @dp.message(SetProfile.activity_level)
-async def set_user_acitivity_level(message: types.Message, state: FSMContext):
+async def set_user_activity_level(message: types.Message, state: FSMContext):
     """Задать уровень активности."""
 
-    await state.update_data(user_acitivity_level=message.text)
+    await state.update_data(user_activity_level=message.text)
     data = await state.get_data()
     await state.clear()
-    
+
     # Convert string values to numbers
     weight = float(data["user_weight"])
     height = float(data["user_height"])
     age = int(data["user_age"])
-    activity = int(data["user_acitivity_level"])
+    activity = int(data["user_activity_level"])
 
     # Get temperature for user's city
     temperature = await get_temperature(data["user_city"])
 
     # Calculate norms
     water_norm = calculate_water_norm(weight, activity, temperature)
-    calorie_norm = calculate_calorie_norm(weight, height, age, data["user_sex"])
+    calorie_norm = calculate_calorie_norm(
+        weight, height, age, activity, data["user_sex"]
+    )
 
     # Save user data
     users[message.from_user.id] = {
@@ -178,20 +179,55 @@ async def set_user_acitivity_level(message: types.Message, state: FSMContext):
     )
 
 
+def get_today_date():
+    """Get current date as string in format YYYY-MM-DD"""
+    return date.today().isoformat()
+
+
+def init_daily_logs(user_id: int, today: str) -> None:
+    """Initialize daily logs structure for user if not exists."""
+    if "daily_logs" not in users[user_id]:
+        users[user_id]["daily_logs"] = {}
+
+    if today not in users[user_id]["daily_logs"]:
+        users[user_id]["daily_logs"][today] = {
+            "water": 0,
+            "calories_in": 0,
+            "calories_burned": 0,
+        }
+
+
 @dp.message(Command("log_water"))
 async def log_water_command(message: types.Message, command: CommandObject):
     """Запись количества выпитой воды"""
     if command.args is None:
         await message.answer("Ошибка: не переданы аргументы")
         return
+
+    if message.from_user.id not in users:
+        await message.answer("Ошибка: сначала заполните профиль с помощью /set_profile")
+        return
+
     try:
-        water_amount = command.args
+        water_amount = int(command.args)
+        today = get_today_date()
+
+        init_daily_logs(message.from_user.id, today)
+        users[message.from_user.id]["daily_logs"][today]["water"] += water_amount
+        current_water = users[message.from_user.id]["daily_logs"][today]["water"]
+        water_goal = users[message.from_user.id]["water_goal"]
+        remaining_water = max(0, water_goal - current_water)
+
+        await message.answer(
+            f"Записано!\nВыпито {water_amount} мл воды\n"
+            f"Всего за сегодня: {current_water} мл\n"
+            f"Осталось выпить: {remaining_water} мл до нормы {water_goal} мл"
+        )
     except ValueError:
         await message.answer(
-            "Ошибка: неправильный формат команды. Пример:\n/log_water <объём воды>"
+            "Ошибка: неправильный формат команды. Пример:\n/log_water <объём воды в мл>"
         )
         return
-    await message.answer(f"Записано!\nВыпито {water_amount} мл воды")
 
 
 @dp.message(Command("log_workout"))
@@ -200,14 +236,169 @@ async def log_workout_command(message: types.Message, command: CommandObject):
     if command.args is None:
         await message.answer("Ошибка: не переданы аргументы")
         return
+
+    if (
+        message.from_user.id not in users
+        or users[message.from_user.id].get("weight") is None
+    ):
+        await message.answer("Ошибка: сначала укажите ваш вес в профиле.")
+        return
+
     try:
-        water_amount = command.args
-    except ValueError:
+        # Разделяем аргументы на тип тренировки и длительность
+        workout_type, duration = command.args.rsplit(maxsplit=1)
+        workout_duration = int(duration)
+
+        user_weight = users[message.from_user.id]["weight"]
+        total_calories = await get_activity_calories(
+            workout_type, user_weight, workout_duration
+        )
+    except (ValueError, TypeError):
         await message.answer(
-            "Ошибка: неправильный формат команды. Пример:\n/log_water <объём воды>"
+            "Ошибка: неправильный формат команды. Пример:\n"
+            "/log_workout <тип тренировки> <длительность тренировки в минутах>"
         )
         return
-    await message.answer(f"Записано!\nВыпито {water_amount} мл воды")
+
+    await message.answer(
+        f"Записано!\nТренировка: {workout_type}\n"
+        f"Длительность: {workout_duration} минут\n"
+        f"Потрачено {total_calories} ккал."
+    )
+
+
+@dp.message(Command("log_food"))
+async def log_food_command(
+    message: types.Message, command: CommandObject, state: FSMContext
+):
+    """Начало логирования приема пищи"""
+    if message.from_user.id not in users:
+        await message.answer("Ошибка: сначала заполните профиль с помощью /set_profile")
+        return
+
+    if command.args:
+        # Если название продукта передано сразу в команде
+        food_name = command.args.lower()
+        try:
+            calories_per_100g = await get_food_calories(food_name)
+            # Сохраняем информацию о калорийности во временный кэш
+            food_cache[message.from_user.id] = {"calories": calories_per_100g}
+
+            await state.update_data(food_name=food_name)
+            await state.set_state(LogFood.food_amount)
+            await message.answer(
+                f"{food_name.capitalize()} — {calories_per_100g:.1f} "
+                "ккал на 100 г.\n"
+                "Сколько грамм вы съели?"
+            )
+        except Exception as e:
+            await message.answer("Извините, не могу найти информацию об этом продукте.")
+            await state.clear()
+    else:
+        await message.answer(
+            "Ошибка: не указано название продукта. Пример:\n/log_food банан"
+        )
+
+
+@dp.message(LogFood.food_amount)
+async def process_food_amount(message: types.Message, state: FSMContext):
+    """Обработка указанного количества продукта"""
+    try:
+        amount = float(message.text)
+        food_data = food_cache.get(message.from_user.id)
+
+        if food_data:
+            calories_per_100g = food_data["calories"]
+            total_calories = (calories_per_100g * amount) / 100
+
+            today = get_today_date()
+            init_daily_logs(message.from_user.id, today)
+            users[message.from_user.id]["daily_logs"][today]["calories_in"] += (
+                total_calories
+            )
+
+            current_calories = users[message.from_user.id]["daily_logs"][today][
+                "calories_in"
+            ]
+            calorie_goal = users[message.from_user.id]["calorie_goal"]
+            remaining_calories = max(0, calorie_goal - current_calories)
+
+            await message.answer(
+                f"Записано: {total_calories:.1f} ккал\n"
+                f"Всего за сегодня: {current_calories:.1f} ккал\n"
+                f"Осталось: {remaining_calories:.1f} ккал до нормы"
+            )
+
+            # Очищаем временные данные
+            del food_cache[message.from_user.id]
+        else:
+            await message.answer("Произошла ошибка. Попробуйте снова.")
+
+    except ValueError:
+        await message.answer("Пожалуйста, введите корректное число грамм")
+        return
+    finally:
+        await state.clear()
+
+
+@dp.message(Command("check_progress"))
+async def check_progress_command(message: types.Message):
+    """Показывает прогресс пользователя по воде и калориям"""
+    if message.from_user.id not in users:
+        await message.answer("Ошибка: сначала заполните профиль с помощью /set_profile")
+        return
+
+    user_data = users[message.from_user.id]
+
+    if "daily_logs" not in user_data:
+        await message.answer("У вас пока нет записей о воде и калориях")
+        return
+
+    # Получаем данные за последние 7 дней
+    daily_logs = user_data["daily_logs"]
+    water_goal = user_data["water_goal"]
+    calorie_goal = user_data["calorie_goal"]
+
+    # Создаем графики
+    water_chart = create_water_progress_chart(daily_logs, water_goal)
+    calories_chart = create_calories_progress_chart(daily_logs, calorie_goal)
+
+    # Получаем данные за сегодня для текстового отчета
+    today = get_today_date()
+    today_data = daily_logs.get(
+        today, {"water": 0, "calories_in": 0, "calories_burned": 0}
+    )
+
+    water_consumed = today_data["water"]
+    water_remaining = max(0, water_goal - water_consumed)
+
+    calories_consumed = today_data["calories_in"]
+    calories_burned = today_data["calories_burned"]
+    calories_balance = calories_consumed - calories_burned
+    calories_remaining = max(0, calorie_goal - calories_balance)
+
+    # Отправляем текстовый отчет
+    await message.answer(
+        "Прогресс за сегодня:\n\n"
+        "Вода:\n"
+        f"- Выпито: {water_consumed} мл из {water_goal} мл\n"
+        f"- Осталось: {water_remaining} мл\n\n"
+        "Калории:\n"
+        f"- Потреблено: {calories_consumed:.1f} ккал\n"
+        f"- Сожжено: {calories_burned:.1f} ккал\n"
+        f"- Баланс: {calories_balance:.1f} ккал из {calorie_goal} ккал\n"
+        f"- Осталось: {calories_remaining:.1f} ккал"
+    )
+
+    # Отправляем графики
+    await message.answer_photo(
+        BufferedInputFile(water_chart.getvalue(), filename="water.png"),
+        caption="График потребления воды за последние 7 дней",
+    )
+    await message.answer_photo(
+        BufferedInputFile(calories_chart.getvalue(), filename="calories.png"),
+        caption="График баланса калорий за последние 7 дней",
+    )
 
 
 async def main():

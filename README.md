@@ -46,7 +46,6 @@ A Telegram bot that helps users track their daily water intake, calories, and ph
 
 1. Build the Docker image:
 ```bash
-bash
 docker build -t fitness-bot .
 ```
 2. Run the container:

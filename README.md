@@ -61,13 +61,6 @@ docker run -d --env-file .env fitness-bot
 - Nutritionix API - for food calorie data
 - API Ninjas - for activity calorie calculations
 
-## Technical Details
-
-- Built with Python 3.12
-- Uses aiogram 3.x for Telegram bot functionality
-- Implements FSM (Finite State Machine) for conversation flow
-- Utilizes matplotlib for data visualization
-- Includes logging middleware for monitoring
 
 ## License
 
